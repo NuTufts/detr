@@ -74,8 +74,11 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     header = 'Test:'
 
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
-    coco_evaluator = CocoEvaluator(base_ds, iou_types)
-    # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
+    if base_ds is not None:
+        coco_evaluator = CocoEvaluator(base_ds, iou_types)
+        # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
+    else:
+        coco_evaluator = None
 
     panoptic_evaluator = None
     if 'panoptic' in postprocessors.keys():

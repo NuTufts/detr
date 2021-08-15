@@ -23,4 +23,7 @@ def build_dataset(image_set, args):
         # to avoid making panopticapi required for coco
         from .coco_panoptic import build as build_coco_panoptic
         return build_coco_panoptic(image_set, args)
+    if args.dataset_file == 'uboone':
+        from .uboonedataset import build as build_uboone_detection
+        return build_uboone_detection( image_set, args )
     raise ValueError('dataset {args.dataset_file} not supported')
