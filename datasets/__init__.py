@@ -3,7 +3,7 @@ import torch.utils.data
 import torchvision
 
 from .coco import build as build_coco
-from .uboone import ubooneDetection
+from .uboonedataset import ubooneDetection
 
 
 def get_coco_api_from_dataset(dataset):
