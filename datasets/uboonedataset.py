@@ -173,7 +173,11 @@ class ubooneDetection(torch.utils.data.Dataset):
 
             for name,arr in target.items():
                 target[name] = torch.from_numpy(arr)
-        
+
+        w = imgout.shape[1]
+        h = imgout.shape[2]
+        target["orig_size"] = torch.as_tensor([int(h), int(w)])
+        target["size"] = torch.as_tensor([int(h), int(w)])
             
         self._nloaded[workerid] += nloaded
         self._current_entry[workerid] = entry
@@ -216,12 +220,13 @@ class ubooneDetection(torch.utils.data.Dataset):
 def build( image_set, args ):
     if not os.path.exists(args.uboone_path):
         assert "provided uboone detection path {%s} does not exist"%(args.uboone_path)
-        
-    dataset = ubooneDetection( "test_detr2d.root",
+
+    datafile = "test_detr2d.root"
+    dataset = ubooneDetection( args.uboone_path+"/"+datafile,
                                random_access=True,
                                num_workers=0,
                                num_predictions=None,
-                               num_channels=1,
+                               num_channels=3,
                                return_masks=args.masks )
     return dataset
     
@@ -237,7 +242,7 @@ if __name__ == "__main__":
     test = ubooneDetection( "test_detr2d.root", random_access=True,
                             num_workers=num_workers,
                             num_predictions=None,
-                            num_channels=1,
+                            num_channels=3,
                             return_masks=True )
     loader = torch.utils.data.DataLoader(test,batch_size=batch_size,
                                          num_workers=num_workers,
