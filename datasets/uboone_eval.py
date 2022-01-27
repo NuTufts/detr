@@ -13,17 +13,21 @@ import numpy as np
 import torch
 
 #from pycocotools.cocoeval import COCOeval
-from .pycocotools.cocoeval import COCOeval
-from pycocotools.coco import COCO
-#from .uboonedataset import UbooneAnnotation as COCO
+#from .pycocotools.cocoeval import COCOeval
+from .pycocotools.ubooneeval import UbooneEval as COCOeval
+#from pycocotools.coco import COCO
+from .uboonedataset import UbooneAnnotation as COCO
+#from .pycocotools.uboone import UbooneAnnotation as COCO
+from .uboonedataset import ubooneDetection
 import pycocotools.mask as mask_util
 
 from util.misc import all_gather
 
 from tensorboardX import SummaryWriter
 
-class CocoEvaluator(object):
-    def __init__(self, coco_gt, iou_types):
+
+class UbooneEvaluator(object):
+    def __init__(self, coco_gt, iou_types, dataset):
         assert isinstance(iou_types, (list, tuple))
         coco_gt = copy.deepcopy(coco_gt)
         self.coco_gt = coco_gt
@@ -35,6 +39,7 @@ class CocoEvaluator(object):
 
         self.img_ids = []
         self.eval_imgs = {k: [] for k in iou_types}
+        self.dataset = dataset
 
     def update(self, predictions):
         img_ids = list(np.unique(list(predictions.keys())))
@@ -43,10 +48,13 @@ class CocoEvaluator(object):
         for iou_type in self.iou_types:
             results = self.prepare(predictions, iou_type)
 
-            # suppress pycocotools prints
+            #print_stuff = '''
+            #suppress pycocotools prints
             with open(os.devnull, 'w') as devnull:
                 with contextlib.redirect_stdout(devnull):
-                    coco_dt = COCO.loadRes(self.coco_gt, results) if results else COCO()
+                    coco_dt = COCO.loadRes(self.coco_gt, results, self.dataset) if results else COCO(self.dataset)
+            #'''
+            #coco_dt = COCO.loadRes(self.coco_gt, results, self.dataset) if results else COCO(self.dataset)
             coco_eval = self.coco_eval[iou_type]
 
             coco_eval.cocoDt = coco_dt
@@ -167,7 +175,10 @@ class CocoEvaluator(object):
 
 def convert_to_xywh(boxes):
     xmin, ymin, xmax, ymax = boxes.unbind(1)
-    return torch.stack((xmin, ymin, xmax - xmin, ymax - ymin), dim=1)
+    # for use when running with normal training
+    #return torch.stack((xmin, ymin, xmax - xmin, ymax - ymin), dim=1) / 512
+    # for use when running with gt instead of pred
+    return torch.stack((xmin, ymin, xmax, ymax), dim=1)
 
 
 def merge(img_ids, eval_imgs):
@@ -239,7 +250,6 @@ def evaluate(self):
         (imgId, catId): computeIoU(imgId, catId)
         for imgId in p.imgIds
         for catId in catIds}
-
     evaluateImg = self.evaluateImg
     maxDet = p.maxDets[-1]
     evalImgs = [

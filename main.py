@@ -15,7 +15,15 @@ import util.misc as utils
 from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+import matplotlib as mpl
+import pylab
+import os
 
+from tensorboardX import SummaryWriter
+writer = SummaryWriter("/home/phy68/DETR/uboone/detr/runs/filtering" + '/' +
+                       datetime.datetime.now().strftime("%b" "%d") + '_' + datetime.datetime.now().strftime("%H:%M:%S"))
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
@@ -104,12 +112,13 @@ def get_args_parser():
 
 
 def main(args):
+    print('\nArguments:\n', args, '\n')
+
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
 
     if args.frozen_weights is not None:
         assert args.masks, "Frozen training is meant for segmentation only"
-    print(args)
 
     device = torch.device(args.device)
 
@@ -127,7 +136,6 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('number of params:', n_parameters)
 
     param_dicts = [
         {"params": [p for n, p in model_without_ddp.named_parameters() if "backbone" not in n and p.requires_grad]},
@@ -141,7 +149,7 @@ def main(args):
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
     dataset_train = build_dataset(image_set='train', args=args)
-    dataset_val = build_dataset(image_set='val', args=args)
+    dataset_val = build_dataset(image_set='train', args=args)
 
     if args.distributed:
         sampler_train = DistributedSampler(dataset_train)
@@ -164,6 +172,8 @@ def main(args):
         base_ds = get_coco_api_from_dataset(coco_val)
     elif args.dataset_file == "coco":
         base_ds = get_coco_api_from_dataset(dataset_val)
+    elif args.dataset_file == "uboone":
+        base_ds = get_coco_api_from_dataset(dataset_val)
     else:
         base_ds = None
 
@@ -178,26 +188,46 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
+
+        # copy over class embed weights and biases
+        num_classes = 92 if args.dataset_file != 'uboone' else 9
+        class_embed_weights = torch.Tensor
+        class_embed_biases = torch.Tensor
+        for param in model.parameters():
+            if param.shape == (num_classes, 256):
+                class_embed_weights = torch.nn.utils.parameters_to_vector(param).reshape(param.shape)
+            elif param.shape == (num_classes,):
+                class_embed_biases = torch.nn.utils.parameters_to_vector(param).reshape(param.shape)
+        # replace checkpoint class embed weights and biases with original initialized ones
+        keys = checkpoint['model']
+        for key in checkpoint['model'].keys():
+            if key == 'class_embed.weight':
+                checkpoint['model'][key] = class_embed_weights
+            elif key == 'class_embed.bias':
+                checkpoint['model'][key] = class_embed_biases
+
         model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             args.start_epoch = checkpoint['epoch'] + 1
-
-    if args.eval and args.dataset_file in ["coco","coco_panoptic"]:
+    
+    if args.eval and args.dataset_file in ["coco","coco_panoptic", "uboone"]:
+        #epoch sent to evaluate() is 0 since no actual epoch is used for evaluation
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, args.output_dir)
+                                              data_loader_val, base_ds, device, args.output_dir, writer, 0, dataset_val)
         if args.output_dir:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
 
     print("Start training")
     start_time = time.time()
+    num_boxes = 10
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch,
+            model, criterion, data_loader_train, optimizer, device, epoch, writer,
             args.clip_max_norm)
         lr_scheduler.step()
         if args.output_dir:
@@ -213,11 +243,8 @@ def main(args):
                     'epoch': epoch,
                     'args': args,
                 }, checkpoint_path)
-
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
-        )
-
+            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, writer, epoch, dataset_val)
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
@@ -237,15 +264,19 @@ def main(args):
                     for name in filenames:
                         torch.save(coco_evaluator.coco_eval["bbox"].eval,
                                    output_dir / "eval" / name)
-
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    main(args)
+    try:
+        main(args)
+        print('\nArguments:\n', args, '\n')
+    except KeyboardInterrupt:
+        print('KeyboardInterrupt Interrupt (exception caught... exit(0)')
+        print('\nArguments:\n', args, '\n')
+        sys.exit(0)

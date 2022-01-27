@@ -10,13 +10,16 @@ from typing import Iterable
 import torch
 
 import util.misc as utils
-from datasets.coco_eval import CocoEvaluator
+#from datasets.coco_eval import CocoEvaluator
+from datasets.uboone_eval import UbooneEvaluator as CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
-
+from tensorboardX import SummaryWriter
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, max_norm: float = 0):
+                    device: torch.device, epoch: int, writer: SummaryWriter, max_norm: float = 0):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -25,11 +28,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
+    loss_list = []
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         outputs = model(samples)
+
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
@@ -43,6 +48,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
 
         loss_value = losses_reduced_scaled.item()
+        loss_list.append(loss_value)
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
@@ -59,13 +65,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
     # gather the stats from all processes
+    writer.add_scalar("Loss/Train", sum(loss_list) / len(loss_list), epoch)
+    writer.add_scalar("Class Error", loss_dict_reduced['class_error'].item(), epoch)
+    writer.add_scalar("Bbox Error", loss_dict_reduced['loss_bbox'].item(), epoch)
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, writer, epoch, dataset):
     model.eval()
     criterion.eval()
 
@@ -75,7 +84,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
     if base_ds is not None:
-        coco_evaluator = CocoEvaluator(base_ds, iou_types)
+        coco_evaluator = CocoEvaluator(base_ds, iou_types, dataset)
         # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
     else:
         coco_evaluator = None
@@ -88,11 +97,13 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             output_dir=os.path.join(output_dir, "panoptic_eval"),
         )
 
+    loss_list = []
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         outputs = model(samples)
+
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 
@@ -107,12 +118,21 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
                              **loss_dict_reduced_unscaled)
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
 
+        losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
+        loss_value = losses_reduced_scaled.item()
+        loss_list.append(loss_value)
+
+        #for i, output in enumerate(outputs['pred_logits'][0]):
+            #outputs['pred_logits'][0][i] = torch.Tensor([1 if n == i % 10 else 0 for n in range(10)]).cuda()
+        #print('outputsss', outputs['pred_logits'][0])
+
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
         results = postprocessors['bbox'](outputs, orig_target_sizes)
         if 'segm' in postprocessors.keys():
             target_sizes = torch.stack([t["size"] for t in targets], dim=0)
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
@@ -127,6 +147,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             panoptic_evaluator.update(res_pano)
 
     # gather the stats from all processes
+    writer.add_scalar("Loss/Validation", sum(loss_list) / len(loss_list), epoch)
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     if coco_evaluator is not None:
@@ -137,7 +158,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     # accumulate predictions from all images
     if coco_evaluator is not None:
         coco_evaluator.accumulate()
-        coco_evaluator.summarize()
+        coco_evaluator.summarize(writer, epoch)
     panoptic_res = None
     if panoptic_evaluator is not None:
         panoptic_res = panoptic_evaluator.summarize()

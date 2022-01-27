@@ -15,14 +15,12 @@ from util.misc import interpolate
 
 def crop(image, target, region):
     cropped_image = F.crop(image, *region)
-
     target = target.copy()
     i, j, h, w = region
-
     # should we do something wrt the original size?
     target["size"] = torch.tensor([h, w])
 
-    fields = ["labels", "area", "iscrowd"]
+    fields = ["labels", "area"]
 
     if "boxes" in target:
         boxes = target["boxes"]
@@ -60,13 +58,11 @@ def hflip(image, target):
     flipped_image = F.hflip(image)
 
     w, h = image.size
-
     target = target.copy()
     if "boxes" in target:
         boxes = target["boxes"]
         boxes = boxes[:, [2, 1, 0, 3]] * torch.as_tensor([-1, 1, -1, 1]) + torch.as_tensor([w, 0, w, 0])
         target["boxes"] = boxes
-
     if "masks" in target:
         target['masks'] = target['masks'].flip(-1)
 
@@ -228,7 +224,6 @@ class RandomSelect(object):
 class ToTensor(object):
     def __call__(self, img, target):
         return F.to_tensor(img), target
-
 
 class RandomErasing(object):
 
